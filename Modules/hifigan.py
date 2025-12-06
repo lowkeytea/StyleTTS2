@@ -14,14 +14,19 @@ LRELU_SLOPE = 0.1
 class AdaIN1d(nn.Module):
     def __init__(self, style_dim, num_features):
         super().__init__()
-        self.norm = nn.InstanceNorm1d(num_features, affine=False)
+        self.eps = 1e-5
         self.fc = nn.Linear(style_dim, num_features*2)
 
     def forward(self, x, s):
         h = self.fc(s)
         h = h.view(h.size(0), h.size(1), 1)
         gamma, beta = torch.chunk(h, chunks=2, dim=1)
-        return (1 + gamma) * self.norm(x) + beta
+        # InstanceNorm1d(x, affine=False) equivalent:
+        # per-channel mean/var over the temporal dimension
+        mean = x.mean(dim=2, keepdim=True)
+        var = x.var(dim=2, keepdim=True, unbiased=False)
+        x_hat = (x - mean) / torch.sqrt(var + self.eps)
+        return (1 + gamma) * x_hat + beta
 
 class AdaINResBlock1(torch.nn.Module):
     def __init__(self, channels, kernel_size=3, dilation=(1, 3, 5), style_dim=64):
