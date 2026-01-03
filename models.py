@@ -605,7 +605,10 @@ def load_ASR_models(ASR_MODEL_PATH, ASR_MODEL_CONFIG):
 
     def _load_model(model_config, model_path):
         model = ASRCNN(**model_config)
-        params = torch.load(model_path, map_location='cpu')['model']
+        # Torch 2.6+ defaults torch.load(..., weights_only=True), which breaks
+        # loading older checkpoints that rely on pickled state. For the official
+        # StyleTTS2 ASR checkpoints we trust, explicitly allow full loading.
+        params = torch.load(model_path, map_location='cpu', weights_only=False)['model']
         model.load_state_dict(params)
         return model
 
@@ -698,20 +701,53 @@ def build_model(args, text_aligner, pitch_extractor, bert):
     return nets
 
 def load_checkpoint(model, optimizer, path, load_only_params=True, ignore_modules=[]):
-    state = torch.load(path, map_location='cpu')
-    params = state['net']
+    """
+    Load a StyleTTS2 checkpoint, handling single-GPU vs DataParallel
+    mismatches (see upstream issue #254).
+
+    This version is more robust when:
+      - Stage 1 was trained with Accelerate / DDP
+      - Stage 2 is trained on a single GPU or with a different wrapping
+    by aligning state dicts module-by-module when needed.
+    """
+    state = torch.load(path, map_location="cpu")
+    params = state["net"]
+
     for key in model:
         if key in params and key not in ignore_modules:
-            print('%s loaded' % key)
-            model[key].load_state_dict(params[key], strict=False)
+            state_dict = params[key]
+            try:
+                # First try a strict load (names and shapes must match).
+                model[key].load_state_dict(state_dict, strict=True)
+            except Exception:
+                # If that fails (e.g., due to DataParallel / DDP wrappers),
+                # fall back to aligning by order of parameters.
+                from collections import OrderedDict
+
+                current = model[key].state_dict()
+                new_state_dict = OrderedDict()
+                print(
+                    f"{key} key length: {len(current.keys())}, "
+                    f"state_dict key length: {len(state_dict.keys())}"
+                )
+                for (k_m, _), (k_c, v_c) in zip(current.items(), state_dict.items()):
+                    # Map checkpoint value onto the current key name.
+                    new_state_dict[k_m] = v_c
+                model[key].load_state_dict(new_state_dict, strict=True)
+
+            print("%s loaded" % key)
+            # Final non-strict load to allow for minor key differences
+            # (e.g., buffers or newly added fields).
+            model[key].load_state_dict(state_dict, strict=False)
+
     _ = [model[key].eval() for key in model]
-    
+
     if not load_only_params:
         epoch = state["epoch"]
-        iters = state["iters"]
+        iters = state.get("iters", 0)  # Handle checkpoints without iters
         optimizer.load_state_dict(state["optimizer"])
     else:
         epoch = 0
         iters = 0
-        
+
     return model, optimizer, epoch, iters

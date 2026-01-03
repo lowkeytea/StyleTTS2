@@ -13,6 +13,7 @@ import click
 import shutil
 import traceback
 import warnings
+from pathlib import Path
 warnings.simplefilter('ignore')
 from torch.utils.tensorboard import SummaryWriter
 
@@ -142,6 +143,17 @@ def main(config_path):
     if not load_pretrained:
         if config.get('first_stage_path', '') != '':
             first_stage_path = osp.join(log_dir, config.get('first_stage_path', 'first_stage.pth'))
+            
+            # Auto-detect latest 1st stage checkpoint if default doesn't exist
+            if not osp.exists(first_stage_path):
+                print(f"Default first stage model not found at {first_stage_path}. Searching for checkpoints...")
+                checkpoints = sorted(list(Path(log_dir).glob("epoch_1st_*.pth")))
+                if checkpoints:
+                    first_stage_path = str(checkpoints[-1])
+                    print(f"Found latest first stage checkpoint: {first_stage_path}")
+                else:
+                    print("Warning: No epoch_1st_*.pth checkpoints found either.")
+
             print('Loading the first stage model at %s ...' % first_stage_path)
             model, _, start_epoch, iters = load_checkpoint(model, 
                 None, 
@@ -440,21 +452,29 @@ def main(config_path):
             loss_ce /= texts.size(0)
             loss_dur /= texts.size(0)
 
-            g_loss = loss_params.lambda_mel * loss_mel + \
-                     loss_params.lambda_F0 * loss_F0_rec + \
-                     loss_params.lambda_ce * loss_ce + \
-                     loss_params.lambda_norm * loss_norm_rec + \
-                     loss_params.lambda_dur * loss_dur + \
-                     loss_params.lambda_gen * loss_gen_all + \
-                     loss_params.lambda_slm * loss_lm + \
-                     loss_params.lambda_sty * loss_sty + \
-                     loss_params.lambda_diff * loss_diff
+            g_loss = (
+                loss_params.lambda_mel * loss_mel
+                + loss_params.lambda_F0 * loss_F0_rec
+                + loss_params.lambda_ce * loss_ce
+                + loss_params.lambda_norm * loss_norm_rec
+                + loss_params.lambda_dur * loss_dur
+                + loss_params.lambda_gen * loss_gen_all
+                + loss_params.lambda_slm * loss_lm
+                + loss_params.lambda_sty * loss_sty
+                + loss_params.lambda_diff * loss_diff
+            )
 
             running_loss += loss_mel.item()
             g_loss.backward()
             if torch.isnan(g_loss):
-                from IPython.core.debugger import set_trace
-                set_trace()
+                # Skip this batch instead of dropping into an interactive debugger.
+                logger.warning(
+                    "NaN g_loss at epoch %d, step %d; skipping batch.",
+                    epoch,
+                    i,
+                )
+                optimizer.zero_grad()
+                continue
 
             optimizer.step('bert_encoder')
             optimizer.step('bert')
