@@ -1,1 +1,6 @@
 __pycache__
+Data/
+Models/
+StyleTTS2/
+Utils/PLBERT_distilled_4l/
+Utils/PLBERT_student_4l/
