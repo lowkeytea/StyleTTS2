@@ -318,6 +318,25 @@ def main(config_path):
                 writer.add_scalar('train/s2s_loss', loss_s2s, iters)
                 writer.add_scalar('train/slm_loss', loss_slm, iters)
 
+                # Alignment quality metrics (catches BERT degradation affecting alignment)
+                if 's2s_attn_mono' in dir() and s2s_attn_mono is not None:
+                    with torch.no_grad():
+                        # Diagonal concentration: how much attention is near the diagonal
+                        B, T_text, T_mel = s2s_attn_mono.shape
+                        diag_score = 0.0
+                        for b in range(min(B, 4)):  # Sample first 4 in batch
+                            attn = s2s_attn_mono[b]
+                            # Compute expected mel position per text position
+                            mel_positions = torch.arange(T_mel, device=attn.device).float()
+                            expected_mel = (attn * mel_positions.unsqueeze(0)).sum(dim=-1)
+                            # Ideal diagonal: linear mapping from text to mel
+                            ideal_mel = torch.linspace(0, T_mel - 1, T_text, device=attn.device)
+                            # Score: 1 - normalized deviation from diagonal
+                            deviation = (expected_mel - ideal_mel).abs().mean() / T_mel
+                            diag_score += (1.0 - deviation.item())
+                        diag_score /= min(B, 4)
+                        writer.add_scalar('train/align_diagonal_score', diag_score, iters)
+
                 running_loss = 0
                 
                 print('Time elasped:', time.time()-start_time)

@@ -127,6 +127,7 @@ def main(config_path):
     # build model
     model_params = recursive_munch(config['model_params'])
     multispeaker = model_params.multispeaker
+    style_dim = int(model_params.style_dim)
     model = build_model(model_params, text_aligner, pitch_extractor, plbert)
     _ = [model[key].to(device) for key in model]
     
@@ -244,12 +245,13 @@ def main(config_path):
     running_std = []
     
     slmadv_params = Munch(config['slmadv_params'])
-    slmadv = SLMAdversarialLoss(model, wl, sampler, 
-                                slmadv_params.min_len, 
+    slmadv = SLMAdversarialLoss(model, wl, sampler,
+                                slmadv_params.min_len,
                                 slmadv_params.max_len,
                                 batch_percentage=slmadv_params.batch_percentage,
-                                skip_update=slmadv_params.iter, 
-                                sig=slmadv_params.sig
+                                skip_update=slmadv_params.iter,
+                                sig=slmadv_params.sig,
+                                style_dim=style_dim
                                )
 
 
@@ -576,6 +578,21 @@ def main(config_path):
                 writer.add_scalar('train/diff_loss', loss_diff, iters)
                 writer.add_scalar('train/d_loss_slm', d_loss_slm, iters)
                 writer.add_scalar('train/gen_loss_slm', loss_gen_lm, iters)
+
+                # BERT embedding monitoring (catches distilled BERT degradation)
+                if bert_dur is not None:
+                    bert_norm = bert_dur.norm(dim=-1).mean().item()
+                    bert_std = bert_dur.std(dim=-1).mean().item()
+                    writer.add_scalar('train/bert_emb_norm', bert_norm, iters)
+                    writer.add_scalar('train/bert_emb_std', bert_std, iters)
+
+                # Duration prediction accuracy (MAE in frames)
+                if 'd_gt' in dir() and d_gt is not None and 'pred_dur' not in dir():
+                    with torch.no_grad():
+                        dur_pred_check = model.predictor.duration_proj(d_en)
+                        dur_pred_check = torch.sigmoid(dur_pred_check).sum(axis=-1)
+                        dur_mae = (dur_pred_check - d_gt).abs().mean().item()
+                        writer.add_scalar('train/dur_mae_frames', dur_mae, iters)
                 
                 running_loss = 0
                 
@@ -745,19 +762,19 @@ def main(config_path):
                     
                 for bib in range(len(d_en)):
                     if multispeaker:
-                        s_pred = sampler(noise = torch.randn((1, 256)).unsqueeze(1).to(texts.device), 
+                        s_pred = sampler(noise = torch.randn((1, style_dim * 2)).unsqueeze(1).to(texts.device), 
                               embedding=bert_dur[bib].unsqueeze(0),
                               embedding_scale=1,
                                 features=ref_s[bib].unsqueeze(0), # reference from the same speaker as the embedding
                                  num_steps=5).squeeze(1)
                     else:
-                        s_pred = sampler(noise = torch.randn((1, 256)).unsqueeze(1).to(texts.device), 
+                        s_pred = sampler(noise = torch.randn((1, style_dim * 2)).unsqueeze(1).to(texts.device), 
                               embedding=bert_dur[bib].unsqueeze(0),
                               embedding_scale=1,
                                  num_steps=5).squeeze(1)
 
-                    s = s_pred[:, 128:]
-                    ref = s_pred[:, :128]
+                    s = s_pred[:, style_dim:]
+                    ref = s_pred[:, :style_dim]
 
                     d = model.predictor.text_encoder(d_en[bib, :, :input_lengths[bib]].unsqueeze(0), 
                                                      s, input_lengths[bib, ...].unsqueeze(0), text_mask[bib, :input_lengths[bib]].unsqueeze(0))

@@ -4,18 +4,19 @@ import torch.nn.functional as F
 
 class SLMAdversarialLoss(torch.nn.Module):
 
-    def __init__(self, model, wl, sampler, min_len, max_len, batch_percentage=0.5, skip_update=10, sig=1.5):
+    def __init__(self, model, wl, sampler, min_len, max_len, batch_percentage=0.5, skip_update=10, sig=1.5, style_dim=128):
         super(SLMAdversarialLoss, self).__init__()
         self.model = model
         self.wl = wl
         self.sampler = sampler
-        
+
         self.min_len = min_len
         self.max_len = max_len
         self.batch_percentage = batch_percentage
-        
+
         self.sig = sig
         self.skip_update = skip_update
+        self.style_dim = style_dim
         
     def forward(self, iters, y_rec_gt, y_rec_gt_pred, waves, mel_input_length, ref_text, ref_lengths, use_ind, s_trg, ref_s=None):
         text_mask = length_to_mask(ref_lengths).to(ref_text.device)
@@ -40,8 +41,8 @@ class SLMAdversarialLoss(torch.nn.Module):
                          embedding_mask_proba=0.1,
                          num_steps=num_steps).squeeze(1)
             
-        s_dur = s_preds[:, 128:]
-        s = s_preds[:, :128]
+        s_dur = s_preds[:, self.style_dim:]
+        s = s_preds[:, :self.style_dim]
         
         d, _ = self.model.predictor(d_en, s_dur, 
                                                 ref_lengths, 
@@ -134,8 +135,8 @@ class SLMAdversarialLoss(torch.nn.Module):
         en = torch.stack(en)
         p_en = torch.stack(p_en)
         
-        F0_fake, N_fake = self.model.predictor.F0Ntrain(p_en, sp[:, 128:])
-        y_pred = self.model.decoder(en, F0_fake, N_fake, sp[:, :128])
+        F0_fake, N_fake = self.model.predictor.F0Ntrain(p_en, sp[:, self.style_dim:])
+        y_pred = self.model.decoder(en, F0_fake, N_fake, sp[:, :self.style_dim])
         
         # discriminator loss
         if (iters + 1) % self.skip_update == 0:
